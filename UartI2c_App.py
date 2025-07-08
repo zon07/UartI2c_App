@@ -5,7 +5,7 @@ from tkinter import ttk, messagebox
 from enum import IntEnum
 import threading
 import queue
-import time  # Добавлен импорт для time.sleep
+import time
 
 class Command(IntEnum):
     I2C_WRITE = 0x01
@@ -33,7 +33,7 @@ class UARTI2CTester:
             crc = ((crc << 1) ^ 0x07) if (crc & 0x80) else (crc << 1)
         return crc & 0xFF
 
-    def connect(self, port, baudrate=9600):  # Изменено на 9600
+    def connect(self, port, baudrate=9600):
         try:
             self.ser = serial.Serial(port, baudrate, timeout=1)
             self.running = True
@@ -57,27 +57,26 @@ class UARTI2CTester:
                     buffer += self.ser.read(self.ser.in_waiting)
                     
                     # Поиск пакетов в буфере
-                    while len(buffer) >= 5:  # Минимальный размер пакета
-                        # Ищем заголовок AA AA
-                        start = buffer.find(b'\xAA\xAA')
+                    while len(buffer) >= 5:
+                        start = buffer.find(b'\x41\x41')
                         if start == -1:
                             buffer = bytes()
                             break
                         
-                        buffer = buffer[start:]  # Обрезаем мусор до заголовка
+                        buffer = buffer[start:]
                         if len(buffer) < 5:
                             break
                         
                         length = buffer[2]
                         if len(buffer) < 3 + length + (1 if self.use_crc else 0):
-                            break  # Ждем полный пакет
+                            break
                         
                         packet = buffer[:3 + length + (1 if self.use_crc else 0)]
                         buffer = buffer[3 + length + (1 if self.use_crc else 0):]
                         
-                        # Проверка CRC
                         if self.use_crc:
                             crc = 0
+                            crc = self.calculate_crc(crc, length)
                             for byte in packet[3:3+length]:
                                 crc = self.calculate_crc(crc, byte)
                             if packet[-1] != crc:
@@ -91,25 +90,25 @@ class UARTI2CTester:
                 break
 
     def send_packet(self, packet_id, cmd, data=bytes()):
-        """Отправка пакета с автоматическим добавлением CRC"""
+        """Отправка пакета с CRC (как в микроконтроллере: длина + payload, без 'A A')"""
         if not self.ser or not self.ser.is_open:
             return False
         
         payload = bytes([packet_id, cmd]) + data
         length = len(payload)
-        packet = bytes([0xAA, 0xAA, length]) + payload
+        packet = bytes([0x41, 0x41, length]) + payload
         
         if self.use_crc:
             crc = 0
-            for byte in packet[3:]:
+            crc = self.calculate_crc(crc, length)
+            for byte in payload:
                 crc = self.calculate_crc(crc, byte)
             packet += bytes([crc])
         
         try:
-            # Отправка с задержкой между байтами
             for byte in packet:
                 self.ser.write(bytes([byte]))
-                time.sleep(0.001)  # Задержка 1 мс
+                time.sleep(0.001)
             return True
         except Exception as e:
             messagebox.showerror("Ошибка", f"Ошибка отправки: {e}")
@@ -137,12 +136,19 @@ class App(tk.Tk):
         self.port_combobox.grid(row=0, column=1, padx=5)
         self.refresh_ports()
         
+        self.refresh_ports_btn = ttk.Button(
+            self.connection_frame,
+            text="Обновить порты",
+            command=self.refresh_ports
+        )
+        self.refresh_ports_btn.grid(row=0, column=2, padx=5)
+        
         self.connect_btn = ttk.Button(
             self.connection_frame, 
             text="Подключиться", 
             command=self.toggle_connection
         )
-        self.connect_btn.grid(row=0, column=2, padx=5)
+        self.connect_btn.grid(row=0, column=3, padx=5)
         
         # Вкладки
         self.notebook = ttk.Notebook(self)
@@ -221,7 +227,6 @@ class App(tk.Tk):
         self.ping_btn.pack(pady=5)
 
     def create_gpio_tab(self):
-        # GPIO будет реализована аналогично I2C
         ttk.Label(self.gpio_frame, text="GPIO функционал будет добавлен позже").pack(pady=20)
 
     def refresh_ports(self):
@@ -264,13 +269,11 @@ class App(tk.Tk):
             self.log("Ping ->")
 
     def process_events(self):
-        """Обработка событий из очереди"""
         while not self.tester.rx_queue.empty():
             event_type, data = self.tester.rx_queue.get()
             
             if event_type == "DATA":
                 self.log(f"Получено: {data.hex(' ')}")
-                # Разбор ответа
                 if len(data) >= 2:
                     packet_id = data[0]
                     cmd = data[1]
