@@ -336,6 +336,7 @@ class App(tk.Tk):
             
             cmd_bytes = bytes([cmd & 0xFF, (cmd >> 8) & 0xFF])
             write_len = len(data)
+            # Формируем payload согласно протоколу: [PacketID][CMD][SA][I2C_CMD(2)][WRITE_LEN][WRITE_DATA]
             data_part = bytes([addr]) + cmd_bytes + bytes([write_len]) + data
             
             if self.tester.send_packet(1, Command.I2C_WRITE, data_part):
@@ -350,6 +351,7 @@ class App(tk.Tk):
             length = int(self.i2c_read_len_entry.get())
             
             cmd_bytes = bytes([cmd & 0xFF, (cmd >> 8) & 0xFF])
+            # Формируем payload согласно протоколу: [PacketID][CMD][SA][I2C_CMD(2)][READ_LEN]
             data_part = bytes([addr]) + cmd_bytes + bytes([length])
             
             if self.tester.send_packet(1, Command.I2C_READ, data_part):
