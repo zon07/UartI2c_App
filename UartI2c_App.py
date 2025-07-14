@@ -417,25 +417,32 @@ class App(tk.Tk):
                     status_or_value = data[2]
                     
                     # Форматируем статус
-                    status_text = ""
                     try:
-                        if cmd == Command.GPIO_READ:
-                            status_text = "HIGH" if status_or_value else "LOW"
-                        else:
-                            status_text = Status(status_or_value).name
+                        status_text = Status(status_or_value).name
                     except ValueError:
                         status_text = f"0x{status_or_value:02x}"
                     
                     # Формируем сообщение
                     message = [
                         f"Получен пакет:",
-                        f"ID Пакета: 0x{packet_id:02x}",
+                        f"ID: 0x{packet_id:02x}",
                         f"Команда: 0x{cmd:02x} ({Command(cmd).name if cmd in Command._value2member_map_ else 'НЕИЗВЕСТНА'})",
                         f"Статус: {status_text}"
                     ]
                     
-                    # Добавляем специфичную информацию
-                    if cmd == Command.PING:
+                    if cmd == Command.GPIO_READ:
+                        if status_or_value == Status.OK:
+                            if len(data) >= 4:
+                                pin_state = data[3]
+                                message.append(f"Состояние пина: {'HIGH' if pin_state else 'LOW'}")
+                            else:
+                                message.append("Предупреждение: Отсутствует данные о состоянии пина")
+                        else:
+                            # Для ошибки просто выводим статус, не ожидая данных
+                            message.append("Ошибка: Пин не поддерживается или другая ошибка")
+                    
+                    # Обработка других команд остается без изменений
+                    elif cmd == Command.PING:
                         message.append("Тип: Ответ на Ping")
                     
                     elif cmd == Command.I2C_WRITE:
@@ -447,24 +454,28 @@ class App(tk.Tk):
                         else:
                             message.append("Результат: Ошибка чтения")
                     
-                    elif cmd == Command.GPIO_READ:
-                        pin = data[0] if len(data) > 0 else 0
-                        message.append(f"Пин: {pin}")
-                        message.append(f"Состояние: {'HIGH' if status_or_value else 'LOW'}")
-                    
                     elif cmd == Command.GPIO_WRITE:
                         message.append("Операция: Запись GPIO")
                     
-                    # Выводим сообщение с разделителями
+                    # Выводим сообщение
                     for line in message:
                         self.log(line)
-                    self.log("")  # Пустая строка как разделитель
+                    self.log("")  # Пустая строка-разделитель
             
             elif event_type == "ERROR":
                 self.log(f"Ошибка: {data}")
-                self.log("")  # Пустая строка после ошибки
+                self.log("")
         
         self.after(100, self.process_events)
+
+    def get_pin_name(self, pin):
+        """Возвращает имя пина по его номеру"""
+        pin_names = {
+            0: "Bsp_PrstPort",
+            1: "Bsp_VD2",
+            2: "Bsp_PwrOnPort"
+        }
+        return pin_names.get(pin, "Неизвестный пин")
 
     def log(self, message):
         self.log_text.config(state=tk.NORMAL)
