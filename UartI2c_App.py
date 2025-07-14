@@ -411,37 +411,58 @@ class App(tk.Tk):
             event_type, data = self.tester.rx_queue.get()
             
             if event_type == "DATA":
-                #self.log(f"Получено: {data.hex(' ')}")
-
                 if len(data) >= 3:
                     packet_id = data[0]
                     cmd = data[1]
                     status_or_value = data[2]
-                    self.log(f"I2C Read <- Packet ID: {packet_id}")
-                    self.log(f"I2C Read <- CMD: {cmd}")
-                    self.log(f"I2C Read <- Status: {status_or_value}")
                     
+                    # Форматируем статус
+                    status_text = ""
+                    try:
+                        if cmd == Command.GPIO_READ:
+                            status_text = "HIGH" if status_or_value else "LOW"
+                        else:
+                            status_text = Status(status_or_value).name
+                    except ValueError:
+                        status_text = f"0x{status_or_value:02x}"
+                    
+                    # Формируем сообщение
+                    message = [
+                        f"Получен пакет:",
+                        f"ID Пакета: 0x{packet_id:02x}",
+                        f"Команда: 0x{cmd:02x} ({Command(cmd).name if cmd in Command._value2member_map_ else 'НЕИЗВЕСТНА'})",
+                        f"Статус: {status_text}"
+                    ]
+                    
+                    # Добавляем специфичную информацию
                     if cmd == Command.PING:
-                        self.log("Pong <-")
+                        message.append("Тип: Ответ на Ping")
                     
                     elif cmd == Command.I2C_WRITE:
-                        self.log(f"I2C Write <- Статус: {'OK' if status_or_value == Status.OK else 'ERROR'}")
+                        message.append("Операция: Запись I2C")
                     
                     elif cmd == Command.I2C_READ:
                         if status_or_value == Status.OK and len(data) > 3:
-                            self.log(f"I2C Read <- DATA: {data[3:].hex(' ')}")
+                            message.append(f"Данные: {data[3:].hex(' ')}")
                         else:
-                            self.log(f"I2C Read <- Ошибка")
+                            message.append("Результат: Ошибка чтения")
                     
                     elif cmd == Command.GPIO_READ:
                         pin = data[0] if len(data) > 0 else 0
-                        self.log(f"GPIO Read <- Пин {pin}: {'HIGH' if status_or_value else 'LOW'}")
+                        message.append(f"Пин: {pin}")
+                        message.append(f"Состояние: {'HIGH' if status_or_value else 'LOW'}")
                     
                     elif cmd == Command.GPIO_WRITE:
-                        self.log(f"GPIO Write <- Статус: {'OK' if status_or_value == Status.OK else 'ERROR'}")
+                        message.append("Операция: Запись GPIO")
+                    
+                    # Выводим сообщение с разделителями
+                    for line in message:
+                        self.log(line)
+                    self.log("")  # Пустая строка как разделитель
             
             elif event_type == "ERROR":
                 self.log(f"Ошибка: {data}")
+                self.log("")  # Пустая строка после ошибки
         
         self.after(100, self.process_events)
 
