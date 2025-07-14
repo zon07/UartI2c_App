@@ -1,7 +1,7 @@
 import serial
 import serial.tools.list_ports
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, Menu
 from enum import IntEnum
 import threading
 import queue
@@ -9,7 +9,7 @@ import time
 
 class Command(IntEnum):
     I2C_WRITE = 0x01
-    I2C_READ = 0x02  # В протоколе это CMD_I2C_WRITE_THEN_READ
+    I2C_READ = 0x02  # CMD_I2C_WRITE_THEN_READ
     GPIO_READ = 0x10
     GPIO_WRITE = 0x11
     PING = 0xFF
@@ -27,7 +27,6 @@ class UARTI2CTester:
         self.running = False
 
     def calculate_crc(self, current_crc, new_byte):
-        """Алгоритм CRC-8/Dallas (как на микроконтроллере)"""
         crc = current_crc ^ new_byte
         for _ in range(8):
             crc = ((crc << 1) ^ 0x07) if (crc & 0x80) else (crc << 1)
@@ -90,21 +89,15 @@ class UARTI2CTester:
                 break
 
     def send_packet(self, packet_id, cmd, data=None):
-        """Отправка пакета с CRC"""
+        """Отправка пакета с CRC с задержкой между байтами"""
         if not self.ser or not self.ser.is_open:
             return False
         
-        # Формируем payload в зависимости от типа команды
-        if cmd in [Command.GPIO_READ, Command.GPIO_WRITE, Command.PING]:
-            # Для GPIO и PING не используем поле LEN
-            if data:
-                payload = bytes([packet_id, cmd]) + data
-            else:
-                payload = bytes([packet_id, cmd])
+        # Формируем payload
+        if data:
+            payload = bytes([packet_id, cmd]) + data
         else:
-            # Для I2C используем поле LEN
-            length = len(data) if data else 0
-            payload = bytes([packet_id, cmd, length]) + (data if data else bytes())
+            payload = bytes([packet_id, cmd])
         
         # Добавляем заголовок и CRC
         packet = bytes([0x41, 0x41, len(payload)]) + payload
@@ -117,9 +110,10 @@ class UARTI2CTester:
             packet += bytes([crc])
         
         try:
+            # Отправка с задержкой 1 мс между байтами
             for byte in packet:
                 self.ser.write(bytes([byte]))
-                time.sleep(0.002)
+                time.sleep(0.002)  # 1 мс задержка
             return True
         except Exception as e:
             messagebox.showerror("Ошибка", f"Ошибка отправки: {e}")
@@ -133,6 +127,7 @@ class App(tk.Tk):
         self.tester = UARTI2CTester()
         
         self.create_widgets()
+        self.create_context_menu()
         self.after(100, self.process_events)
 
     def create_widgets(self):
@@ -182,12 +177,38 @@ class App(tk.Tk):
         self.log_text = tk.Text(self.log_frame, height=10, state=tk.DISABLED)
         self.log_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
+        # Кнопки управления логом
+        btn_frame = ttk.Frame(self.log_frame)
+        btn_frame.pack(side=tk.RIGHT, padx=5, pady=5)
+        
+        self.copy_log_btn = ttk.Button(
+            btn_frame,
+            text="Копировать лог",
+            command=self.copy_log
+        )
+        self.copy_log_btn.pack(side=tk.TOP, pady=2)
+        
         self.clear_log_btn = ttk.Button(
-            self.log_frame,
+            btn_frame,
             text="Очистить лог",
             command=self.clear_log
         )
-        self.clear_log_btn.pack(side=tk.RIGHT, padx=5, pady=5)
+        self.clear_log_btn.pack(side=tk.TOP, pady=2)
+
+    def create_context_menu(self):
+        """Создание контекстного меню для лога"""
+        self.log_menu = Menu(self, tearoff=0)
+        self.log_menu.add_command(label="Копировать", command=self.copy_log)
+        self.log_menu.add_command(label="Очистить", command=self.clear_log)
+        
+        self.log_text.bind("<Button-3>", self.show_context_menu)
+
+    def show_context_menu(self, event):
+        """Показ контекстного меню"""
+        try:
+            self.log_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.log_menu.grab_release()
 
     def create_i2c_tab(self):
         # I2C Write
@@ -334,13 +355,13 @@ class App(tk.Tk):
             cmd = int(self.i2c_cmd_entry.get(), 16)
             data = bytes.fromhex(self.i2c_data_entry.get()) if self.i2c_data_entry.get() else bytes()
             
-            cmd_bytes = bytes([cmd & 0xFF, (cmd >> 8) & 0xFF])
+            # Формат: [SA][I2C_DATA_LEN][I2C_CMD(2)][I2C_WRITE_DATA]
+            cmd_bytes = bytes([(cmd >> 8) & 0xFF, cmd & 0xFF])  # Старший байт первым
             write_len = len(data)
-            # Формируем payload согласно протоколу: [PacketID][CMD][SA][I2C_CMD(2)][WRITE_LEN][WRITE_DATA]
-            data_part = bytes([addr]) + cmd_bytes + bytes([write_len]) + data
+            data_part = bytes([addr, write_len]) + cmd_bytes + data
             
             if self.tester.send_packet(1, Command.I2C_WRITE, data_part):
-                self.log(f"I2C Write -> Адрес: 0x{addr:02x}, Команда: 0x{cmd:04x}, Данные: {data.hex(' ') if data else 'нет'}")
+                self.log(f"I2C Write -> Адрес: 0x{addr:02x}, Команда: 0x{cmd:04x}, Длина: {write_len}, Данные: {data.hex(' ') if data else 'нет'}")
         except ValueError as e:
             messagebox.showerror("Ошибка", f"Некорректные данные: {e}")
 
@@ -350,12 +371,12 @@ class App(tk.Tk):
             cmd = int(self.i2c_read_cmd_entry.get(), 16)
             length = int(self.i2c_read_len_entry.get())
             
-            cmd_bytes = bytes([cmd & 0xFF, (cmd >> 8) & 0xFF])
-            # Формируем payload согласно протоколу: [PacketID][CMD][SA][I2C_CMD(2)][READ_LEN]
-            data_part = bytes([addr]) + cmd_bytes + bytes([length])
+            # Формат: [SA][I2C_DATA_LEN][I2C_CMD(2)]
+            cmd_bytes = bytes([(cmd >> 8) & 0xFF, cmd & 0xFF])  # Старший байт первым
+            data_part = bytes([addr, length]) + cmd_bytes
             
             if self.tester.send_packet(1, Command.I2C_READ, data_part):
-                self.log(f"I2C Read <- Адрес: 0x{addr:02x}, Команда: 0x{cmd:04x}, Байт: {length}")
+                self.log(f"I2C Read -> Адрес: 0x{addr:02x}, Команда: 0x{cmd:04x}, Байт для чтения: {length}")
         except ValueError as e:
             messagebox.showerror("Ошибка", f"Некорректные данные: {e}")
 
@@ -364,7 +385,6 @@ class App(tk.Tk):
             pin_str = self.gpio_pin_var.get()
             pin = int(pin_str.split(" - ")[0])
             
-            # Для GPIO_READ отправляем только PacketID, CMD и PIN (без LEN)
             if self.tester.send_packet(1, Command.GPIO_READ, bytes([pin])):
                 self.log(f"GPIO Read -> Пин: {pin_str}")
         except Exception as e:
@@ -376,14 +396,13 @@ class App(tk.Tk):
             pin = int(pin_str.split(" - ")[0])
             state = self.gpio_state_var.get()
             
-            # Для GPIO_WRITE отправляем PacketID, CMD, PIN и STATE (без LEN)
             if self.tester.send_packet(1, Command.GPIO_WRITE, bytes([pin, state])):
                 self.log(f"GPIO Write -> Пин: {pin_str}, Состояние: {'Вкл' if state else 'Выкл'}")
         except Exception as e:
             messagebox.showerror("Ошибка", f"Ошибка записи GPIO: {e}")
 
     def send_ping(self):
-        # Для PING отправляем только PacketID и CMD
+        # Ping остается без изменений
         if self.tester.send_packet(1, Command.PING):
             self.log("Ping ->")
 
@@ -392,25 +411,33 @@ class App(tk.Tk):
             event_type, data = self.tester.rx_queue.get()
             
             if event_type == "DATA":
-                self.log(f"Получено: {data.hex(' ')}")
+                #self.log(f"Получено: {data.hex(' ')}")
+
                 if len(data) >= 3:
                     packet_id = data[0]
                     cmd = data[1]
                     status_or_value = data[2]
+                    self.log(f"I2C Read <- Packet ID: {packet_id}")
+                    self.log(f"I2C Read <- CMD: {cmd}")
+                    self.log(f"I2C Read <- Status: {status_or_value}")
                     
-                    if cmd == Command.PING | 0x80:
+                    if cmd == Command.PING:
                         self.log("Pong <-")
-                    elif cmd == Command.I2C_WRITE | 0x80:
+                    
+                    elif cmd == Command.I2C_WRITE:
                         self.log(f"I2C Write <- Статус: {'OK' if status_or_value == Status.OK else 'ERROR'}")
-                    elif cmd == Command.I2C_READ | 0x80:
+                    
+                    elif cmd == Command.I2C_READ:
                         if status_or_value == Status.OK and len(data) > 3:
-                            self.log(f"I2C Read <- Данные: {data[3:].hex(' ')}")
+                            self.log(f"I2C Read <- DATA: {data[3:].hex(' ')}")
                         else:
                             self.log(f"I2C Read <- Ошибка")
-                    elif cmd == Command.GPIO_READ | 0x80:
+                    
+                    elif cmd == Command.GPIO_READ:
                         pin = data[0] if len(data) > 0 else 0
                         self.log(f"GPIO Read <- Пин {pin}: {'HIGH' if status_or_value else 'LOW'}")
-                    elif cmd == Command.GPIO_WRITE | 0x80:
+                    
+                    elif cmd == Command.GPIO_WRITE:
                         self.log(f"GPIO Write <- Статус: {'OK' if status_or_value == Status.OK else 'ERROR'}")
             
             elif event_type == "ERROR":
@@ -423,6 +450,12 @@ class App(tk.Tk):
         self.log_text.insert(tk.END, message + "\n")
         self.log_text.see(tk.END)
         self.log_text.config(state=tk.DISABLED)
+
+    def copy_log(self):
+        """Копирование содержимого лога в буфер обмена"""
+        self.clipboard_clear()
+        self.clipboard_append(self.log_text.get(1.0, tk.END))
+        self.log("Лог скопирован в буфер обмена")
 
     def clear_log(self):
         self.log_text.config(state=tk.NORMAL)
