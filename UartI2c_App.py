@@ -1,130 +1,15 @@
-import serial
 import serial.tools.list_ports
 import tkinter as tk
-from tkinter import ttk, messagebox, Menu
-from enum import IntEnum
-import threading
-import queue
 import time
-
-class Command(IntEnum):
-    I2C_WRITE = 0x01
-    I2C_READ = 0x02  # CMD_I2C_WRITE_THEN_READ
-    GPIO_READ = 0x10
-    GPIO_WRITE = 0x11
-    PING = 0xFF
-
-class Status(IntEnum):
-    OK = 0x00
-    ERROR = 0x01
-    CRC_ERROR = 0x02
-
-class UARTI2CTester:
-    def __init__(self):
-        self.ser = None
-        self.use_crc = True
-        self.rx_queue = queue.Queue()
-        self.running = False
-
-    def calculate_crc(self, current_crc, new_byte):
-        crc = current_crc ^ new_byte
-        for _ in range(8):
-            crc = ((crc << 1) ^ 0x07) if (crc & 0x80) else (crc << 1)
-        return crc & 0xFF
-
-    def connect(self, port, baudrate=9600):
-        try:
-            self.ser = serial.Serial(port, baudrate, timeout=1)
-            self.running = True
-            threading.Thread(target=self._read_thread, daemon=True).start()
-            return True
-        except Exception as e:
-            messagebox.showerror("Ошибка", f"Не удалось подключиться: {e}")
-            return False
-
-    def disconnect(self):
-        self.running = False
-        if self.ser and self.ser.is_open:
-            self.ser.close()
-
-    def _read_thread(self):
-        """Поток для чтения данных из порта"""
-        buffer = bytes()
-        while self.running:
-            try:
-                if self.ser.in_waiting > 0:
-                    buffer += self.ser.read(self.ser.in_waiting)
-                    
-                    # Поиск пакетов в буфере
-                    while len(buffer) >= 5:
-                        start = buffer.find(b'\x41\x41')
-                        if start == -1:
-                            buffer = bytes()
-                            break
-                        
-                        buffer = buffer[start:]
-                        if len(buffer) < 5:
-                            break
-                        
-                        length = buffer[2]
-                        if len(buffer) < 3 + length + (1 if self.use_crc else 0):
-                            break
-                        
-                        packet = buffer[:3 + length + (1 if self.use_crc else 0)]
-                        buffer = buffer[3 + length + (1 if self.use_crc else 0):]
-                        
-                        if self.use_crc:
-                            crc = 0
-                            crc = self.calculate_crc(crc, length)
-                            for byte in packet[3:3+length]:
-                                crc = self.calculate_crc(crc, byte)
-                            if packet[-1] != crc:
-                                self.rx_queue.put(("ERROR", "CRC mismatch"))
-                                continue
-                        
-                        payload = packet[3:3+length]
-                        self.rx_queue.put(("DATA", payload))
-            except Exception as e:
-                self.rx_queue.put(("ERROR", str(e)))
-                break
-
-    def send_packet(self, packet_id, cmd, data=None):
-        """Отправка пакета с CRC с задержкой между байтами"""
-        if not self.ser or not self.ser.is_open:
-            return False
-        
-        # Формируем payload
-        if data:
-            payload = bytes([packet_id, cmd]) + data
-        else:
-            payload = bytes([packet_id, cmd])
-        
-        # Добавляем заголовок и CRC
-        packet = bytes([0x41, 0x41, len(payload)]) + payload
-        
-        if self.use_crc:
-            crc = 0
-            crc = self.calculate_crc(crc, len(payload))
-            for byte in payload:
-                crc = self.calculate_crc(crc, byte)
-            packet += bytes([crc])
-        
-        try:
-            # Отправка с задержкой 1 мс между байтами
-            for byte in packet:
-                self.ser.write(bytes([byte]))
-                time.sleep(0.002)  # 1 мс задержка
-            return True
-        except Exception as e:
-            messagebox.showerror("Ошибка", f"Ошибка отправки: {e}")
-            return False
+from tkinter import ttk, messagebox, Menu
+from UartToI2C import UartToI2C, Command, Status
 
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("UART-I2C Bridge Tester")
         self.geometry("700x500")
-        self.tester = UARTI2CTester()
+        self.bridge = UartToI2C()
         
         self.create_widgets()
         self.create_context_menu()
@@ -339,13 +224,13 @@ class App(tk.Tk):
             self.port_combobox.set(ports[0])
 
     def toggle_connection(self):
-        if self.tester.ser and self.tester.ser.is_open:
-            self.tester.disconnect()
+        if self.bridge._ser and self.bridge._ser.is_open:
+            self.bridge.disconnect()
             self.connect_btn.config(text="Подключиться")
             self.log("Отключено от порта")
         else:
             port = self.port_combobox.get()
-            if port and self.tester.connect(port):
+            if port and self.bridge.connect(port):
                 self.connect_btn.config(text="Отключиться")
                 self.log(f"Подключено к {port}")
 
@@ -353,15 +238,10 @@ class App(tk.Tk):
         try:
             addr = int(self.i2c_addr_entry.get(), 16)
             cmd = int(self.i2c_cmd_entry.get(), 16)
-            data = bytes.fromhex(self.i2c_data_entry.get()) if self.i2c_data_entry.get() else bytes()
+            data = bytes.fromhex(self.i2c_data_entry.get()) if self.i2c_data_entry.get() else None
             
-            # Формат: [SA][I2C_DATA_LEN][I2C_CMD(2)][I2C_WRITE_DATA]
-            cmd_bytes = bytes([(cmd >> 8) & 0xFF, cmd & 0xFF])  # Старший байт первым
-            write_len = len(data)
-            data_part = bytes([addr, write_len]) + cmd_bytes + data
-            
-            if self.tester.send_packet(1, Command.I2C_WRITE, data_part):
-                self.log(f"I2C Write -> Адрес: 0x{addr:02x}, Команда: 0x{cmd:04x}, Длина: {write_len}, Данные: {data.hex(' ') if data else 'нет'}")
+            if self.bridge.i2c_write(addr, cmd, data):
+                self.log(f"I2C Write -> Адрес: 0x{addr:02x}, Команда: 0x{cmd:04x}, Данные: {data.hex(' ') if data else 'нет'}")
         except ValueError as e:
             messagebox.showerror("Ошибка", f"Некорректные данные: {e}")
 
@@ -371,12 +251,11 @@ class App(tk.Tk):
             cmd = int(self.i2c_read_cmd_entry.get(), 16)
             length = int(self.i2c_read_len_entry.get())
             
-            # Формат: [SA][I2C_DATA_LEN][I2C_CMD(2)]
-            cmd_bytes = bytes([(cmd >> 8) & 0xFF, cmd & 0xFF])  # Старший байт первым
-            data_part = bytes([addr, length]) + cmd_bytes
-            
-            if self.tester.send_packet(1, Command.I2C_READ, data_part):
-                self.log(f"I2C Read -> Адрес: 0x{addr:02x}, Команда: 0x{cmd:04x}, Байт для чтения: {length}")
+            data = self.bridge.i2c_read(addr, cmd, length)
+            if data is not None:
+                self.log(f"I2C Read -> Адрес: 0x{addr:02x}, Команда: 0x{cmd:04x}, Данные: {data.hex(' ') if data else 'нет'}")
+            else:
+                self.log("Ошибка чтения I2C")
         except ValueError as e:
             messagebox.showerror("Ошибка", f"Некорректные данные: {e}")
 
@@ -385,8 +264,12 @@ class App(tk.Tk):
             pin_str = self.gpio_pin_var.get()
             pin = int(pin_str.split(" - ")[0])
             
-            if self.tester.send_packet(1, Command.GPIO_READ, bytes([pin])):
-                self.log(f"GPIO Read -> Пин: {pin_str}")
+            time.sleep(0.05)  # Добавляем небольшую задержку
+            state = self.bridge.gpio_read(pin)
+            if state is not None:
+                self.log(f"GPIO Read -> Пин: {pin_str}, Состояние: {'HIGH' if state else 'LOW'}")
+            else:
+                self.log("Ошибка чтения GPIO")
         except Exception as e:
             messagebox.showerror("Ошибка", f"Ошибка чтения GPIO: {e}")
 
@@ -396,86 +279,22 @@ class App(tk.Tk):
             pin = int(pin_str.split(" - ")[0])
             state = self.gpio_state_var.get()
             
-            if self.tester.send_packet(1, Command.GPIO_WRITE, bytes([pin, state])):
+            if self.bridge.gpio_write(pin, state):
                 self.log(f"GPIO Write -> Пин: {pin_str}, Состояние: {'Вкл' if state else 'Выкл'}")
+            else:
+                self.log("Ошибка записи GPIO")
         except Exception as e:
             messagebox.showerror("Ошибка", f"Ошибка записи GPIO: {e}")
 
     def send_ping(self):
-        # Ping остается без изменений
-        if self.tester.send_packet(1, Command.PING):
-            self.log("Ping ->")
+        if self.bridge.ping():
+            self.log("Ping -> Успешно")
+        else:
+            self.log("Ping -> Ошибка")
 
     def process_events(self):
-        while not self.tester.rx_queue.empty():
-            event_type, data = self.tester.rx_queue.get()
-            
-            if event_type == "DATA":
-                if len(data) >= 3:
-                    packet_id = data[0]
-                    cmd = data[1]
-                    status_or_value = data[2]
-                    
-                    # Форматируем статус
-                    try:
-                        status_text = Status(status_or_value).name
-                    except ValueError:
-                        status_text = f"0x{status_or_value:02x}"
-                    
-                    # Формируем сообщение
-                    message = [
-                        f"Получен пакет:",
-                        f"ID: 0x{packet_id:02x}",
-                        f"Команда: 0x{cmd:02x} ({Command(cmd).name if cmd in Command._value2member_map_ else 'НЕИЗВЕСТНА'})",
-                        f"Статус: {status_text}"
-                    ]
-                    
-                    if cmd == Command.GPIO_READ:
-                        if status_or_value == Status.OK:
-                            if len(data) >= 4:
-                                pin_state = data[3]
-                                message.append(f"Состояние пина: {'HIGH' if pin_state else 'LOW'}")
-                            else:
-                                message.append("Предупреждение: Отсутствует данные о состоянии пина")
-                        else:
-                            # Для ошибки просто выводим статус, не ожидая данных
-                            message.append("Ошибка: Пин не поддерживается или другая ошибка")
-                    
-                    # Обработка других команд остается без изменений
-                    elif cmd == Command.PING:
-                        message.append("Тип: Ответ на Ping")
-                    
-                    elif cmd == Command.I2C_WRITE:
-                        message.append("Операция: Запись I2C")
-                    
-                    elif cmd == Command.I2C_READ:
-                        if status_or_value == Status.OK and len(data) > 3:
-                            message.append(f"Данные: {data[3:].hex(' ')}")
-                        else:
-                            message.append("Результат: Ошибка чтения")
-                    
-                    elif cmd == Command.GPIO_WRITE:
-                        message.append("Операция: Запись GPIO")
-                    
-                    # Выводим сообщение
-                    for line in message:
-                        self.log(line)
-                    self.log("")  # Пустая строка-разделитель
-            
-            elif event_type == "ERROR":
-                self.log(f"Ошибка: {data}")
-                self.log("")
-        
+        # Обработка событий теперь не требуется, так как UartToI2C работает синхронно
         self.after(100, self.process_events)
-
-    def get_pin_name(self, pin):
-        """Возвращает имя пина по его номеру"""
-        pin_names = {
-            0: "Bsp_PrstPort",
-            1: "Bsp_VD2",
-            2: "Bsp_PwrOnPort"
-        }
-        return pin_names.get(pin, "Неизвестный пин")
 
     def log(self, message):
         self.log_text.config(state=tk.NORMAL)
@@ -495,7 +314,7 @@ class App(tk.Tk):
         self.log_text.config(state=tk.DISABLED)
 
     def on_closing(self):
-        self.tester.disconnect()
+        self.bridge.disconnect()
         self.destroy()
 
 if __name__ == "__main__":
