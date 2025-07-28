@@ -2,7 +2,7 @@ import serial.tools.list_ports
 import tkinter as tk
 import time
 from tkinter import ttk, messagebox, Menu
-from UartToI2C import UartToI2C, Command, Status
+from UartToI2C_Module.UartToI2C import UartToI2C
 
 class App(tk.Tk):
     def __init__(self):
@@ -298,7 +298,9 @@ class App(tk.Tk):
 
     def log(self, message):
         self.log_text.config(state=tk.NORMAL)
-        self.log_text.insert(tk.END, message + "\n")
+        # Добавляем временную метку
+        timestamp = time.strftime("%H:%M:%S", time.localtime())
+        self.log_text.insert(tk.END, f"[{timestamp}] {message}\n")
         self.log_text.see(tk.END)
         self.log_text.config(state=tk.DISABLED)
 

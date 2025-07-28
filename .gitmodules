@@ -1,0 +1,3 @@
+[submodule "UartToI2C_Module"]
+	path = UartToI2C_Module
+	url = https://github.com/zon07/UartToI2C_Module.git
