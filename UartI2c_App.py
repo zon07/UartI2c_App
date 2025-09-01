@@ -277,7 +277,7 @@ class App(tk.Tk):
         self.gpio_pin_combobox = ttk.Combobox(
             self.gpio_read_frame,
             textvariable=self.gpio_pin_var,
-            values=["0 - Bsp_PrstPort", "1 - Bsp_VD2", "2 - Bsp_PwrOnPort"],
+            values=["0 - PrstPort", "1 - VD2", "2 - PwrOnPort", "3 - UserBtn"],
             state="readonly",
             width=20
         )
@@ -301,7 +301,7 @@ class App(tk.Tk):
         self.gpio_write_pin_combobox = ttk.Combobox(
             self.gpio_write_frame,
             textvariable=self.gpio_write_pin_var,
-            values=["1 - Bsp_VD2", "2 - Bsp_PwrOnPort"],
+            values=["1 - VD2", "2 - PwrOnPort"],
             state="readonly",
             width=20
         )
@@ -331,6 +331,46 @@ class App(tk.Tk):
             command=self.gpio_write
         )
         self.gpio_write_btn.grid(row=3, column=1, pady=5)
+        
+        # Power Reset Button
+        self.power_reset_frame = ttk.LabelFrame(self.gpio_frame, text="Управление питанием")
+        self.power_reset_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        self.power_reset_btn = ttk.Button(
+            self.power_reset_frame,
+            text="Reset питания",
+            command=self.power_reset,
+            style="Accent.TButton"  # Можно использовать стиль для выделения кнопки
+        )
+        self.power_reset_btn.pack(pady=10)
+        
+        # Добавляем стиль для выделенной кнопки (опционально)
+        style = ttk.Style()
+        style.configure("Accent.TButton", background="#e74c3c", foreground="white")
+
+    def power_reset(self):
+        """Выполняет reset питания: выключает и включает PwrOnPort"""
+        try:
+            # Пин PwrOnPort имеет номер 2
+            pin = 2
+            
+            # Сначала выключаем питание
+            if self.tester.send_packet(1, Command.GPIO_WRITE, bytes([pin, 0])):
+                self.log(f"Power Reset -> Пин PwrOnPort: Выключен")
+                # Ждем немного перед включением
+                self.after(500, lambda: self._power_on(pin))
+                
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Ошибка reset питания: {e}")
+
+    def _power_on(self, pin):
+        """Включает питание после задержки"""
+        try:
+            if self.tester.send_packet(1, Command.GPIO_WRITE, bytes([pin, 1])):
+                self.log(f"Power Reset -> Пин PwrOnPort: Включен")
+                self.log("Power Reset завершен")
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Ошибка включения питания: {e}")
 
     def refresh_ports(self):
         ports = [p.device for p in serial.tools.list_ports.comports()]
@@ -471,9 +511,10 @@ class App(tk.Tk):
     def get_pin_name(self, pin):
         """Возвращает имя пина по его номеру"""
         pin_names = {
-            0: "Bsp_PrstPort",
-            1: "Bsp_VD2",
-            2: "Bsp_PwrOnPort"
+            0: "PrstPort",
+            1: "VD2",
+            2: "PwrOnPort",
+            3: "UserBtn"
         }
         return pin_names.get(pin, "Неизвестный пин")
 
