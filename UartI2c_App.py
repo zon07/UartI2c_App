@@ -12,6 +12,8 @@ class Command(IntEnum):
     I2C_READ = 0x02  # CMD_I2C_WRITE_THEN_READ
     GPIO_READ = 0x10
     GPIO_WRITE = 0x11
+    GET_SW_VERSION = 0xF0  # Новая команда для версии ПО
+    GET_HW_VERSION = 0x21  # Новая команда для версии железа
     PING = 0xFF
 
 class Status(IntEnum):
@@ -128,7 +130,12 @@ class App(tk.Tk):
         
         self.create_widgets()
         self.create_context_menu()
+        self.create_version_window()
+        self.create_menu()
         self.after(100, self.process_events)
+        
+        # Автоматически запрашиваем версии при подключении
+        self.after(1000, self.auto_request_versions)
 
     def create_widgets(self):
         # Панель подключения
@@ -209,6 +216,67 @@ class App(tk.Tk):
             self.log_menu.tk_popup(event.x_root, event.y_root)
         finally:
             self.log_menu.grab_release()
+
+    def create_menu(self):
+        """Создает главное меню"""
+        menubar = tk.Menu(self)
+        
+        # Меню "Устройство"
+        device_menu = tk.Menu(menubar, tearoff=0)
+        device_menu.add_command(label="Информация о версиях", 
+                               command=self.show_version_window)
+        device_menu.add_separator()
+        device_menu.add_command(label="Выход", command=self.on_closing)
+        
+        menubar.add_cascade(label="Устройство", menu=device_menu)
+        self.config(menu=menubar)
+
+    def create_version_window(self):
+        """Создает окно с информацией о версиях"""
+        self.version_window = tk.Toplevel(self)
+        self.version_window.title("Информация о версиях")
+        self.version_window.geometry("300x110")
+        self.version_window.resizable(False, False)
+        self.version_window.withdraw()  # Скрываем окно до вызова
+        self.version_window.protocol("WM_DELETE_WINDOW", self.version_window.withdraw)
+        
+        # Версия ПО
+        sw_frame = ttk.LabelFrame(self.version_window, text="Версия ПО")
+        sw_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        self.sw_version_label = ttk.Label(sw_frame, text="Не запрошена")
+        self.sw_version_label.pack(pady=5)
+              
+        # Кнопки
+        btn_frame = ttk.Frame(self.version_window)
+        btn_frame.pack(pady=10)
+        
+        ttk.Button(btn_frame, text="Запросить версии", 
+                   command=self.request_versions).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Закрыть", 
+                   command=self.version_window.withdraw).pack(side=tk.LEFT, padx=5)
+
+    def show_version_window(self):
+        """Показывает окно с информацией о версиях"""
+        self.version_window.deiconify()
+        self.version_window.lift()
+
+    def request_versions(self):
+        """Запрашивает версии ПО"""
+        if not self.tester.ser or not self.tester.ser.is_open:
+            messagebox.showwarning("Предупреждение", "Сначала подключитесь к устройству")
+            return
+        
+        # Запрос версии ПО
+        if self.tester.send_packet(1, Command.GET_SW_VERSION):
+            self.log("Запрос версии ПО ->")
+
+    def auto_request_versions(self):
+        """Автоматически запрашивает версии при подключении"""
+        if self.tester.ser and self.tester.ser.is_open:
+            self.request_versions()
+        else:
+            self.after(1000, self.auto_request_versions)
 
     def create_i2c_tab(self):
         # I2C Write
@@ -442,7 +510,6 @@ class App(tk.Tk):
             messagebox.showerror("Ошибка", f"Ошибка записи GPIO: {e}")
 
     def send_ping(self):
-        # Ping остается без изменений
         if self.tester.send_packet(1, Command.PING):
             self.log("Ping ->")
 
@@ -478,10 +545,8 @@ class App(tk.Tk):
                             else:
                                 message.append("Предупреждение: Отсутствует данные о состоянии пина")
                         else:
-                            # Для ошибки просто выводим статус, не ожидая данных
                             message.append("Ошибка: Пин не поддерживается или другая ошибка")
                     
-                    # Обработка других команд остается без изменений
                     elif cmd == Command.PING:
                         message.append("Тип: Ответ на Ping")
                     
@@ -497,6 +562,15 @@ class App(tk.Tk):
                     elif cmd == Command.GPIO_WRITE:
                         message.append("Операция: Запись GPIO")
                     
+                    elif cmd == Command.GET_SW_VERSION:
+                        if status_or_value == Status.OK and len(data) >= 6:
+                            major, minor, patch = data[3], data[4], data[5]
+                            version_str = f"{major}.{minor}.{patch}"
+                            self.sw_version_label.config(text=version_str)
+                            message.append(f"Версия ПО: {version_str}")
+                        else:
+                            message.append("Ошибка получения версии ПО")
+                                  
                     # Выводим сообщение
                     for line in message:
                         self.log(line)
